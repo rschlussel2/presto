@@ -32,6 +32,20 @@ public class PartitioningScheme
     private final Partitioning partitioning;
     private final List<Symbol> outputLayout;
     private final Optional<Symbol> hashColumn;
+
+    /**
+     * replicateNullsAndAny is required for semi-join partitioning
+     *
+     * For a semi-join we check if any of the following conditions are true
+     *  1. There is a matching value
+     *  2. There are nulls on the build side
+     *  3. The probe side is null and there is anything on the build side
+     *
+     *  Therefore, we can't *just* repartition for a semi join:
+     *  1. if there are nulls on the build side those need to be replicated to every worker
+     *  2. at least one row (any row) from the build side needs to be replicated to all the
+     *     worker nodes in case there are nulls on the probe side
+     */
     private final boolean replicateNullsAndAny;
     private final Optional<int[]> bucketToPartition;
 
