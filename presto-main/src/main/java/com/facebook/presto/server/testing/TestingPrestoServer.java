@@ -231,8 +231,7 @@ public class TestingPrestoServer
                 .put("exchange.client-threads", "4");
 
         if (coordinator) {
-            // TODO: enable failure detector
-            serverProperties.put("failure-detector.enabled", "false");
+            serverProperties.put("failure-detector.enabled", "true");
         }
 
         ImmutableList.Builder<Module> modules = ImmutableList.<Module>builder()
