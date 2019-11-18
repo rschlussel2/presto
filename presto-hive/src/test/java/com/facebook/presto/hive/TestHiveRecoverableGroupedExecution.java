@@ -38,8 +38,10 @@ import java.util.OptionalLong;
 import static com.facebook.presto.SystemSessionProperties.COLOCATED_JOIN;
 import static com.facebook.presto.SystemSessionProperties.CONCURRENT_LIFESPANS_PER_NODE;
 import static com.facebook.presto.SystemSessionProperties.DYNAMIC_SCHEDULE_FOR_GROUPED_EXECUTION;
+import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.GROUPED_EXECUTION_FOR_AGGREGATION;
 import static com.facebook.presto.SystemSessionProperties.GROUPED_EXECUTION_FOR_ELIGIBLE_TABLE_SCANS;
+import static com.facebook.presto.SystemSessionProperties.MAX_STAGE_RETRIES;
 import static com.facebook.presto.SystemSessionProperties.RECOVERABLE_GROUPED_EXECUTION;
 import static com.facebook.presto.SystemSessionProperties.REDISTRIBUTE_WRITES;
 import static com.facebook.presto.SystemSessionProperties.SCALE_WRITERS;
@@ -48,8 +50,8 @@ import static com.facebook.presto.SystemSessionProperties.TASK_WRITER_COUNT;
 import static com.facebook.presto.execution.TaskState.RUNNING;
 import static com.facebook.presto.hive.HiveQueryRunner.HIVE_CATALOG;
 import static com.facebook.presto.hive.HiveQueryRunner.TPCH_BUCKETED_SCHEMA;
-import static com.facebook.presto.hive.HiveQueryRunner.createQueryRunner;
 import static com.facebook.presto.hive.HiveSessionProperties.VIRTUAL_BUCKET_COUNT;
+import static com.facebook.presto.spi.security.SelectedRole.Type.ALL;
 import static com.facebook.presto.spi.security.SelectedRole.Type.ROLE;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
@@ -78,26 +80,39 @@ public class TestHiveRecoverableGroupedExecution
     public void setUp()
             throws Exception
     {
-        queryRunner = createQueryRunner(
+        queryRunner = createQueryRunner(false);
+        executor = listeningDecorator(newCachedThreadPool());
+    }
+
+    private DistributedQueryRunner createQueryRunner(boolean materialized)
+            throws Exception
+    {
+        ImmutableMap.Builder<String, String> extraPropertiesBuilder = ImmutableMap.<String, String>builder()
+                .put("exchange.max-error-duration", "5m")
+                .put("exchange.http-client.request-timeout", "1s");
+
+        if (materialized) {
+            extraPropertiesBuilder.put("query.partitioning-provider-catalog", "hive")
+                    .put("query.exchange-materialization-strategy", "ALL")
+                    .put("query.hash-partition-count", "11")
+                    .put("colocated-joins-enabled", "true")
+                    .put("grouped-execution-for-aggregation-enabled", "true");
+        }
+
+        return HiveQueryRunner.createQueryRunner(
                 ImmutableList.of(ORDERS),
                 // extra properties
-                ImmutableMap.of(
-                        // task get results timeout has to be significantly higher that the task status update timeout
-                        "exchange.max-error-duration", "5m",
-                        // set the timeout of a single HTTP request to 1s, to make sure that the task result requests are actually failing
-                        // The default is 10s, that might not be sufficient to make sure that the request fails before the recoverable execution kicks in
-                        "exchange.http-client.request-timeout", "1s"),
+                extraPropertiesBuilder.build(),
                 // extra coordinator properties
                 ImmutableMap.of(
                         // set the timeout of the task update requests to something low to improve overall test latency
-                        "scheduler.http-client.request-timeout", "1s",
+                        "scheduler.http-client.request-timeout", "6s",
                         // this effectively disables the retries
-                        "query.remote-task.max-error-duration", "1s",
+                        "query.remote-task.max-error-duration", "6s",
                         // allow 2 out of 4 tasks to fail
                         "max-failed-task-percentage", "0.6"),
 
                 Optional.empty());
-        executor = listeningDecorator(newCachedThreadPool());
     }
 
     @AfterClass(alwaysRun = true)
@@ -332,6 +347,28 @@ public class TestHiveRecoverableGroupedExecution
                         "DROP TABLE IF EXISTS test_failure"));
     }
 
+    @Test
+    public void testCountOnUnbucketedTable()
+            throws Exception
+    {
+        queryRunner = createQueryRunner(true);
+        testRecoverableGroupedExecution(
+                4,
+                ImmutableList.of(
+                        "CREATE TABLE test_table AS\n" +
+                                "SELECT orderkey, comment\n" +
+                                "FROM orders\n"),
+                "CREATE TABLE test_success AS\n" +
+                        "SELECT count(*) as a, comment FROM test_table group by comment",
+                "create table test_failure AS\n" +
+                        "SELECT count(*) as a, comment FROM test_table group by comment",
+                14995, // there are 14995 distinct comments in the orders table
+                ImmutableList.of(
+                        "DROP TABLE IF EXISTS test_table",
+                        "DROP TABLE IF EXISTS test_success",
+                        "DROP TABLE IF EXISTS test_failure"));
+    }
+
     private void testRecoverableGroupedExecution(
             int writerConcurrency,
             List<String> preQueries,
@@ -388,7 +425,7 @@ public class TestHiveRecoverableGroupedExecution
             }
             worker2.stopResponding();
 
-            assertEquals(result.get(60, SECONDS).getUpdateCount(), OptionalLong.of(expectedUpdateCount));
+            assertEquals(result.get(1000, SECONDS).getUpdateCount(), OptionalLong.of(expectedUpdateCount));
             log.info("Query with recovery took %sms", recoveryStopwatch.elapsed(MILLISECONDS));
         }
         finally {
@@ -446,6 +483,8 @@ public class TestHiveRecoverableGroupedExecution
                 .setSystemProperty(GROUPED_EXECUTION_FOR_ELIGIBLE_TABLE_SCANS, "true")
                 .setSystemProperty(TASK_WRITER_COUNT, Integer.toString(writerConcurrency))
                 .setSystemProperty(TASK_PARTITIONED_WRITER_COUNT, Integer.toString(writerConcurrency))
+                .setSystemProperty(EXCHANGE_MATERIALIZATION_STRATEGY, ALL.name())
+                .setSystemProperty(MAX_STAGE_RETRIES, "4")
                 .setCatalogSessionProperty(HIVE_CATALOG, VIRTUAL_BUCKET_COUNT, "16")
                 .setCatalog(HIVE_CATALOG)
                 .setSchema(TPCH_BUCKETED_SCHEMA)

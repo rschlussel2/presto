@@ -73,6 +73,7 @@ import static com.facebook.presto.spi.StandardErrorCode.REMOTE_TASK_MISMATCH;
 import static com.facebook.presto.spi.StandardErrorCode.TOO_MANY_REQUESTS_FAILED;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.Sets.newConcurrentHashSet;
@@ -82,7 +83,7 @@ import static java.util.Objects.requireNonNull;
 @ThreadSafe
 public final class SqlStageExecution
 {
-    private static final Set<ErrorCode> RECOVERABLE_ERROR_CODES = ImmutableSet.of(
+    public static final Set<ErrorCode> RECOVERABLE_ERROR_CODES = ImmutableSet.of(
             TOO_MANY_REQUESTS_FAILED.toErrorCode(),
             PAGE_TRANSPORT_ERROR.toErrorCode(),
             PAGE_TRANSPORT_TIMEOUT.toErrorCode(),
@@ -315,6 +316,12 @@ public final class SqlStageExecution
     {
         stateMachine.transitionToAborted();
         getAllTasks().forEach(RemoteTask::abort);
+    }
+
+    public synchronized void finalizeFailure()
+    {
+        verify(stateMachine.getState() == StageExecutionState.TENTATIVE_FAILED, "finalizeFailure called but not in tentative failure state");
+        stateMachine.transitionToFailed();
     }
 
     public long getUserMemoryReservation()

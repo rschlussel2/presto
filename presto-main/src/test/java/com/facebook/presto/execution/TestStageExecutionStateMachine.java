@@ -94,6 +94,10 @@ public class TestStageExecutionStateMachine
         assertState(stateMachine, StageExecutionState.FINISHED);
 
         stateMachine = createStageStateMachine();
+        assertTrue(stateMachine.transitionToTentativeFailed(FAILED_CAUSE));
+        assertState(stateMachine, StageExecutionState.TENTATIVE_FAILED);
+
+        stateMachine = createStageStateMachine();
         assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
         assertState(stateMachine, StageExecutionState.FAILED);
 
@@ -128,6 +132,11 @@ public class TestStageExecutionStateMachine
         stateMachine.transitionToScheduling();
         assertTrue(stateMachine.transitionToFinished());
         assertState(stateMachine, StageExecutionState.FINISHED);
+
+        stateMachine = createStageStateMachine();
+        stateMachine.transitionToScheduling();
+        assertTrue(stateMachine.transitionToTentativeFailed(FAILED_CAUSE));
+        assertState(stateMachine, StageExecutionState.TENTATIVE_FAILED);
 
         stateMachine = createStageStateMachine();
         stateMachine.transitionToScheduling();
@@ -168,6 +177,11 @@ public class TestStageExecutionStateMachine
 
         stateMachine = createStageStateMachine();
         stateMachine.transitionToScheduled();
+        assertTrue(stateMachine.transitionToTentativeFailed(FAILED_CAUSE));
+        assertState(stateMachine, StageExecutionState.TENTATIVE_FAILED);
+
+        stateMachine = createStageStateMachine();
+        stateMachine.transitionToScheduled();
         assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
         assertState(stateMachine, StageExecutionState.FAILED);
 
@@ -203,6 +217,11 @@ public class TestStageExecutionStateMachine
 
         stateMachine = createStageStateMachine();
         stateMachine.transitionToRunning();
+        assertTrue(stateMachine.transitionToTentativeFailed(FAILED_CAUSE));
+        assertState(stateMachine, StageExecutionState.TENTATIVE_FAILED);
+
+        stateMachine = createStageStateMachine();
+        stateMachine.transitionToRunning();
         assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
         assertState(stateMachine, StageExecutionState.FAILED);
 
@@ -227,11 +246,12 @@ public class TestStageExecutionStateMachine
     }
 
     @Test
-    public void testFailed()
+    public void testTentativeFailedAndFailed()
     {
         StageExecutionStateMachine stateMachine = createStageStateMachine();
 
-        assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
+        assertTrue(stateMachine.transitionToTentativeFailed(FAILED_CAUSE));
+        assertTrue(stateMachine.transitionToFailed());
         assertFinalState(stateMachine, StageExecutionState.FAILED);
     }
 
@@ -271,14 +291,14 @@ public class TestStageExecutionStateMachine
         assertFalse(stateMachine.transitionToFinished());
         assertState(stateMachine, expectedState);
 
-        assertFalse(stateMachine.transitionToFailed(FAILED_CAUSE));
+        assertFalse(stateMachine.transitionToTentativeFailed(FAILED_CAUSE));
         assertState(stateMachine, expectedState);
 
         assertFalse(stateMachine.transitionToAborted());
         assertState(stateMachine, expectedState);
 
         // attempt to fail with another exception, which will fail
-        assertFalse(stateMachine.transitionToFailed(new IOException("failure after finish")));
+        assertFalse(stateMachine.transitionToTentativeFailed(new IOException("failure after finish")));
         assertState(stateMachine, expectedState);
     }
 
@@ -293,7 +313,7 @@ public class TestStageExecutionStateMachine
         assertEquals(stateMachine.getState(), expectedState);
         assertEquals(stageExecutionInfo.getState(), expectedState);
 
-        if (expectedState == StageExecutionState.FAILED) {
+        if (expectedState == StageExecutionState.FAILED || expectedState == StageExecutionState.TENTATIVE_FAILED) {
             ExecutionFailureInfo failure = stageExecutionInfo.getFailureCause().get();
             assertEquals(failure.getMessage(), FAILED_CAUSE.getMessage());
             assertEquals(failure.getType(), FAILED_CAUSE.getClass().getName());

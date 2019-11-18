@@ -62,6 +62,10 @@ public enum StageExecutionState
      */
     ABORTED(true, true),
     /**
+     * Query execution failed, but may retry.
+     */
+    TENTATIVE_FAILED(false, false),
+    /**
      * Stage execution failed.
      */
     FAILED(true, true);

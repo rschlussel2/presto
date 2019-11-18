@@ -51,10 +51,12 @@ import static com.facebook.presto.execution.StageExecutionState.RUNNING;
 import static com.facebook.presto.execution.StageExecutionState.SCHEDULED;
 import static com.facebook.presto.execution.StageExecutionState.SCHEDULING;
 import static com.facebook.presto.execution.StageExecutionState.SCHEDULING_SPLITS;
+import static com.facebook.presto.execution.StageExecutionState.TENTATIVE_FAILED;
 import static com.facebook.presto.execution.StageExecutionState.TERMINAL_STAGE_STATES;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.airlift.units.Duration.succinctDuration;
 import static io.airlift.units.Duration.succinctNanos;
@@ -162,17 +164,37 @@ public class StageExecutionStateMachine
         return state.setIf(ABORTED, currentState -> !currentState.isDone());
     }
 
-    public boolean transitionToFailed(Throwable throwable)
+    public boolean transitionToTentativeFailed(Throwable throwable)
     {
         requireNonNull(throwable, "throwable is null");
 
         failureCause.compareAndSet(null, Failures.toFailure(throwable));
-        boolean failed = state.setIf(FAILED, currentState -> !currentState.isDone());
+        boolean failed = state.setIf(TENTATIVE_FAILED, currentState -> !currentState.isDone());
         if (failed) {
             log.error(throwable, "Stage execution %s failed", stageExecutionId);
         }
         else {
             log.debug(throwable, "Failure after stage execution %s finished", stageExecutionId);
+        }
+        return failed;
+    }
+
+    public boolean transitionToFailed()
+    {
+        verify(state.get() == TENTATIVE_FAILED);
+        return transitionToFailed(failureCause.get().toException());
+    }
+
+    public boolean transitionToFailed(Throwable throwable)
+    {
+        requireNonNull(throwable, "throwable is null");
+        failureCause.compareAndSet(null, Failures.toFailure(throwable));
+        boolean failed = state.setIf(FAILED, currentState -> !currentState.isDone());
+        if (failed) {
+            log.error(failureCause.get().toException(), "Stage execution %s failed", stageExecutionId);
+        }
+        else {
+            log.debug(failureCause.get().toException(), "Failure after stage execution %s finished", stageExecutionId);
         }
         return failed;
     }
@@ -479,7 +501,7 @@ public class StageExecutionStateMachine
                 ImmutableList.copyOf(operatorToStats.values()));
 
         Optional<ExecutionFailureInfo> failureInfo = Optional.empty();
-        if (state == FAILED) {
+        if (state == FAILED || state == TENTATIVE_FAILED) {
             failureInfo = Optional.of(failureCause.get());
         }
         return new StageExecutionInfo(
