@@ -397,7 +397,7 @@ public class QueryMonitor
                 return task;
             }
         }
-        return stageInfo.getLatestAttemptExecutionInfo().getTasks().stream()
+        return stageInfo.getLatestTasks().stream()
                 .filter(taskInfo -> taskInfo.getTaskStatus().getState() == TaskState.FAILED)
                 .findFirst();
     }
@@ -447,7 +447,7 @@ public class QueryMonitor
                     continue;
                 }
 
-                for (TaskInfo taskInfo : stage.getLatestAttemptExecutionInfo().getTasks()) {
+                for (TaskInfo taskInfo : stage.getLatestTasks()) {
                     TaskStats taskStats = taskInfo.getStats();
 
                     DateTime firstStartTime = taskStats.getFirstStartTime();
@@ -543,19 +543,19 @@ public class QueryMonitor
         Distribution cpuDistribution = new Distribution();
         Distribution memoryDistribution = new Distribution();
 
-        for (TaskInfo taskInfo : stageInfo.getLatestAttemptExecutionInfo().getTasks()) {
+        for (TaskInfo taskInfo : stageInfo.getLatestTasks()) {
             cpuDistribution.add(taskInfo.getStats().getTotalCpuTime().toMillis());
             memoryDistribution.add(taskInfo.getStats().getPeakTotalMemoryInBytes());
         }
 
         cpuDistributionBuilder.add(createResourceDistribution(
                 stageInfo.getStageId().getId(),
-                stageInfo.getLatestAttemptExecutionInfo().getTasks().size(),
+                stageInfo.getLatestTasks().size(),
                 cpuDistribution.snapshot()));
 
         memoryDistributionBuilder.add(createResourceDistribution(
                 stageInfo.getStageId().getId(),
-                stageInfo.getLatestAttemptExecutionInfo().getTasks().size(),
+                stageInfo.getLatestTasks().size(),
                 memoryDistribution.snapshot()));
 
         for (StageInfo subStage : stageInfo.getSubStages()) {
