@@ -286,6 +286,7 @@ public class DataDefinitionExecution<T extends Statement>
     public static class DataDefinitionExecutionFactory
             implements QueryExecutionFactory<DataDefinitionExecution<?>>
     {
+        
         private final TransactionManager transactionManager;
         private final Metadata metadata;
         private final AccessControl accessControl;
