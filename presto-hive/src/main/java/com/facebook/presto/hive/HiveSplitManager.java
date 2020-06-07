@@ -49,6 +49,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -97,6 +98,7 @@ public class HiveSplitManager
     private final CounterStat highMemorySplitSourceCounter;
     private final CacheQuotaScope cacheQuotaScope;
     private final Optional<DataSize> configuredCacheQuota;
+    private final HiveEncryptionInformationProvider encryptionInformationProvider;
 
     @Inject
     public HiveSplitManager(
@@ -107,7 +109,8 @@ public class HiveSplitManager
             HdfsEnvironment hdfsEnvironment,
             DirectoryLister directoryLister,
             @ForHiveClient ExecutorService executorService,
-            CoercionPolicy coercionPolicy)
+            CoercionPolicy coercionPolicy,
+            HiveEncryptionInformationProvider encryptionInformationProvider)
     {
         this(
                 hiveTransactionManager,
@@ -125,7 +128,8 @@ public class HiveSplitManager
                 hiveClientConfig.getSplitLoaderConcurrency(),
                 hiveClientConfig.getRecursiveDirWalkerEnabled(),
                 cacheConfig.getCacheQuotaScope(),
-                cacheConfig.getDefaultCacheQuota());
+                cacheConfig.getDefaultCacheQuota(),
+                encryptionInformationProvider);
     }
 
     public HiveSplitManager(
@@ -144,7 +148,8 @@ public class HiveSplitManager
             int splitLoaderConcurrency,
             boolean recursiveDfsWalkerEnabled,
             CacheQuotaScope cacheQuotaScope,
-            Optional<DataSize> configuredCacheQuota)
+            Optional<DataSize> configuredCacheQuota,
+            HiveEncryptionInformationProvider encryptionInformationProvider)
     {
         this.hiveTransactionManager = requireNonNull(hiveTransactionManager, "hiveTransactionManager is null");
         this.namenodeStats = requireNonNull(namenodeStats, "namenodeStats is null");
@@ -163,6 +168,7 @@ public class HiveSplitManager
         this.recursiveDfsWalkerEnabled = recursiveDfsWalkerEnabled;
         this.cacheQuotaScope = requireNonNull(cacheQuotaScope, "cacheScope is null");
         this.configuredCacheQuota = requireNonNull(configuredCacheQuota, "defaultCacheQuota is null");
+        this.encryptionInformationProvider = requireNonNull(encryptionInformationProvider, "encryptionInformationProvider is null");
     }
 
     @Override
@@ -225,7 +231,7 @@ public class HiveSplitManager
         if (bucketHandle.isPresent() && !bucketHandle.get().isVirtuallyBucketed()) {
             hiveBucketProperty = bucketHandle.map(HiveBucketHandle::toTableBucketProperty);
         }
-        Iterable<HivePartitionMetadata> hivePartitions = getPartitionMetadata(metastore, table, tableName, partitions, hiveBucketProperty, session);
+        Iterable<HivePartitionMetadata> hivePartitions = getPartitionMetadata(metastore, table, tableName, partitions, hiveBucketProperty, session, layout.getRequestedColumns());
 
         HiveSplitLoader hiveSplitLoader = new BackgroundHiveSplitLoader(
                 table,
@@ -315,7 +321,8 @@ public class HiveSplitManager
             SchemaTableName tableName,
             List<HivePartition> hivePartitions,
             Optional<HiveBucketProperty> bucketProperty,
-            ConnectorSession session)
+            ConnectorSession session,
+            Optional<Set<HiveColumnHandle>> requestedColumns)
     {
         if (hivePartitions.isEmpty()) {
             return ImmutableList.of();
@@ -324,7 +331,11 @@ public class HiveSplitManager
         if (hivePartitions.size() == 1) {
             HivePartition firstPartition = getOnlyElement(hivePartitions);
             if (firstPartition.getPartitionId().equals(UNPARTITIONED_ID)) {
-                return ImmutableList.of(new HivePartitionMetadata(firstPartition, Optional.empty(), ImmutableMap.of()));
+                return ImmutableList.of(new HivePartitionMetadata(
+                        firstPartition,
+                        Optional.empty(),
+                        ImmutableMap.of(),
+                        encryptionInformationProvider.getEncryptionInformation(session, table, requestedColumns)));
             }
         }
 
@@ -346,6 +357,12 @@ public class HiveSplitManager
                 throw new PrestoException(GENERIC_INTERNAL_ERROR, format("Expected %s partitions but found %s", partitionBatch.size(), partitions.size()));
             }
 
+            Optional<Map<String, EncryptionInformation>> encryptionInformationForPartitions = encryptionInformationProvider.getEncryptionInformation(
+                    session,
+                    table,
+                    requestedColumns,
+                    partitions);
+
             ImmutableList.Builder<HivePartitionMetadata> results = ImmutableList.builder();
             for (HivePartition hivePartition : partitionBatch) {
                 Partition partition = partitions.get(hivePartition.getPartitionId());
@@ -353,6 +370,7 @@ public class HiveSplitManager
                     throw new PrestoException(GENERIC_INTERNAL_ERROR, "Partition not loaded: " + hivePartition);
                 }
                 String partName = makePartName(table.getPartitionColumns(), partition.getValues());
+                Optional<EncryptionInformation> encryptionInformation = encryptionInformationForPartitions.map(metadata -> metadata.get(hivePartition.getPartitionId()));
 
                 if (!isOfflineDataDebugModeEnabled(session)) {
                     // verify partition is online
@@ -432,7 +450,7 @@ public class HiveSplitManager
                     }
                 }
 
-                results.add(new HivePartitionMetadata(hivePartition, Optional.of(partition), partitionSchemaDifference.build()));
+                results.add(new HivePartitionMetadata(hivePartition, Optional.of(partition), partitionSchemaDifference.build(), encryptionInformation));
             }
 
             return results.build();
