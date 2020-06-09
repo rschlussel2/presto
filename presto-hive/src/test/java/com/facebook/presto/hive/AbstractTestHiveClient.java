@@ -771,7 +771,8 @@ public abstract class AbstractTestHiveClient
                 Optional.empty(),
                 Optional.empty(),
                 false,
-                "layout");
+                "layout",
+                Optional.empty());
 
         int partitionColumnIndex = MAX_PARTITION_KEY_COLUMN_INDEX;
         dsColumn = new HiveColumnHandle("ds", HIVE_STRING, parseTypeSignature(StandardTypes.VARCHAR), partitionColumnIndex--, PARTITION_KEY, Optional.empty());
@@ -837,7 +838,8 @@ public abstract class AbstractTestHiveClient
                         Optional.empty(),
                         Optional.empty(),
                         false,
-                        "layout"),
+                        "layout",
+                        Optional.empty()),
                 Optional.empty(),
                 withColumnDomains(ImmutableMap.of(
                         dsColumn, Domain.create(ValueSet.ofRanges(Range.equal(createUnboundedVarcharType(), utf8Slice("2012-12-29"))), false),
@@ -879,7 +881,8 @@ public abstract class AbstractTestHiveClient
                 Optional.empty(),
                 Optional.empty(),
                 false,
-                "layout"));
+                "layout",
+                Optional.empty()));
         timeZone = DateTimeZone.forTimeZone(TimeZone.getTimeZone(timeZoneId));
     }
 
@@ -1969,7 +1972,8 @@ public abstract class AbstractTestHiveClient
                     Optional.of(new HiveBucketHandle(bucketHandle.getColumns(), bucketHandle.getTableBucketCount(), 2)),
                     layoutHandle.getBucketFilter(),
                     false,
-                    "layout");
+                    "layout",
+                    Optional.empty());
 
             List<ConnectorSplit> splits = getAllSplits(session, transaction, modifiedReadBucketCountLayoutHandle);
             assertEquals(splits.size(), 16);
