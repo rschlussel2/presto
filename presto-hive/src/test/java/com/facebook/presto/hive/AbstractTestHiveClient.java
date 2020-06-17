@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.stats.CounterStat;
 import com.facebook.presto.GroupByHashPageIndexerFactory;
@@ -159,7 +158,6 @@ import java.util.stream.LongStream;
 
 import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
-import static com.facebook.airlift.json.JsonCodec.jsonCodec;
 import static com.facebook.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static com.facebook.airlift.testing.Assertions.assertGreaterThan;
 import static com.facebook.airlift.testing.Assertions.assertGreaterThanOrEqual;
@@ -398,7 +396,6 @@ public abstract class AbstractTestHiveClient
             .add(new ColumnMetadata("ds", createUnboundedVarcharType()))
             .build();
 
-    private static final JsonCodec<PartitionUpdate> PARTITION_UPDATE_CODEC = jsonCodec(PartitionUpdate.class);
     private static final DataSize DEFAULT_QUOTA_SIZE = DataSize.succinctDataSize(2, GIGABYTE);
     private static final CacheQuotaScope CACHE_SCOPE = TABLE;
 
@@ -938,7 +935,7 @@ public abstract class AbstractTestHiveClient
                 ROW_EXPRESSION_SERVICE,
                 FILTER_STATS_CALCULATOR_SERVICE,
                 new TableParameterCodec(),
-                PARTITION_UPDATE_CODEC,
+                HiveTestUtils.PARTITION_UPDATE_CODEC,
                 listeningDecorator(executor),
                 new HiveTypeTranslator(),
                 new HiveStagingFileCommitter(hdfsEnvironment, listeningDecorator(executor)),
@@ -975,7 +972,7 @@ public abstract class AbstractTestHiveClient
                 getHiveClientConfig(),
                 getMetastoreClientConfig(),
                 locationService,
-                PARTITION_UPDATE_CODEC,
+                HiveTestUtils.PARTITION_UPDATE_CODEC,
                 new TestingNodeManager("fake-environment"),
                 new HiveEventClient(),
                 new HiveSessionProperties(hiveClientConfig, new OrcFileWriterConfig(), new ParquetFileWriterConfig()),
@@ -4345,7 +4342,7 @@ public abstract class AbstractTestHiveClient
     {
         fragments.stream()
                 .map(Slice::getBytes)
-                .map(PARTITION_UPDATE_CODEC::fromJson)
+                .map(HiveTestUtils.PARTITION_UPDATE_CODEC::fromJson)
                 .map(PartitionUpdate::getFileWriteInfos)
                 .flatMap(List::stream)
                 .forEach(fileWriteInfo -> assertNotEquals(fileWriteInfo.getWriteFileName(), fileWriteInfo.getTargetFileName()));
@@ -5374,7 +5371,7 @@ public abstract class AbstractTestHiveClient
                 if (conflictTrigger.isPresent()) {
                     List<PartitionUpdate> partitionUpdates = fragments.stream()
                             .map(Slice::getBytes)
-                            .map(PARTITION_UPDATE_CODEC::fromJson)
+                            .map(HiveTestUtils.PARTITION_UPDATE_CODEC::fromJson)
                             .collect(toList());
                     conflictTrigger.get().triggerConflict(session, tableName, insertTableHandle, partitionUpdates);
                 }
