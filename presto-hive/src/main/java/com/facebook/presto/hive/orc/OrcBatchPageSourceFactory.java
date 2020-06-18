@@ -16,6 +16,7 @@ package com.facebook.presto.hive.orc;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.EncryptionInformation;
 import com.facebook.presto.hive.FileFormatDataSourceStats;
 import com.facebook.presto.hive.HdfsEnvironment;
 import com.facebook.presto.hive.HiveBatchPageSourceFactory;
@@ -24,6 +25,7 @@ import com.facebook.presto.hive.HiveColumnHandle;
 import com.facebook.presto.hive.HiveFileContext;
 import com.facebook.presto.hive.HiveOrcAggregatedMemoryContext;
 import com.facebook.presto.hive.metastore.Storage;
+import com.facebook.presto.orc.DwrfEncryptionProvider;
 import com.facebook.presto.orc.OrcAggregatedMemoryContext;
 import com.facebook.presto.orc.OrcBatchRecordReader;
 import com.facebook.presto.orc.OrcDataSource;
@@ -42,6 +44,7 @@ import com.facebook.presto.spi.FixedPageSource;
 import com.facebook.presto.spi.PrestoException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -138,7 +141,8 @@ public class OrcBatchPageSourceFactory
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             DateTimeZone hiveStorageTimeZone,
-            HiveFileContext hiveFileContext)
+            HiveFileContext hiveFileContext,
+            Optional<EncryptionInformation> encryptionInformation)
     {
         if (!OrcSerde.class.getName().equals(storage.getStorageFormat().getSerDe())) {
             return Optional.empty();
@@ -176,7 +180,9 @@ public class OrcBatchPageSourceFactory
                         getOrcMaxMergeDistance(session),
                         getOrcTinyStripeThreshold(session),
                         getOrcMaxReadBlockSize(session),
-                        isOrcZstdJniDecompressionEnabled(session))));
+                        isOrcZstdJniDecompressionEnabled(session)),
+                encryptionInformation,
+                NO_ENCRYPTION));
     }
 
     public static OrcBatchPageSource createOrcPageSource(
@@ -202,7 +208,9 @@ public class OrcBatchPageSourceFactory
             OrcFileTailSource orcFileTailSource,
             StripeMetadataSource stripeMetadataSource,
             HiveFileContext hiveFileContext,
-            OrcReaderOptions orcReaderOptions)
+            OrcReaderOptions orcReaderOptions,
+            Optional<EncryptionInformation> encryptionInformation,
+            DwrfEncryptionProvider dwrfEncryptionProvider)
     {
         checkArgument(domainCompactionThreshold >= 1, "domainCompactionThreshold must be at least 1");
 
@@ -238,7 +246,7 @@ public class OrcBatchPageSourceFactory
                     new HiveOrcAggregatedMemoryContext(),
                     orcReaderOptions,
                     hiveFileContext.isCacheable(),
-                    NO_ENCRYPTION);
+                    dwrfEncryptionProvider);
 
             List<HiveColumnHandle> physicalColumns = getPhysicalHiveColumnHandles(columns, useOrcColumnNames, reader, path);
             ImmutableMap.Builder<Integer, Type> includedColumns = ImmutableMap.builder();
@@ -253,6 +261,11 @@ public class OrcBatchPageSourceFactory
 
             OrcPredicate predicate = new TupleDomainOrcPredicate<>(effectivePredicate, columnReferences.build(), orcBloomFiltersEnabled, Optional.of(domainCompactionThreshold));
 
+            Map<Integer, Slice> keyMap = ImmutableMap.of();
+            if (encryptionInformation.isPresent() && encryptionInformation.get().getDwrfEncryptionMetadata().isPresent()) {
+                keyMap = encryptionInformation.get().getDwrfEncryptionMetadata().get().toKeyMap(reader.getTypes(), physicalColumns);
+            }
+
             OrcBatchRecordReader recordReader = reader.createBatchRecordReader(
                     includedColumns.build(),
                     predicate,
@@ -261,7 +274,7 @@ public class OrcBatchPageSourceFactory
                     hiveStorageTimeZone,
                     systemMemoryUsage,
                     INITIAL_BATCH_SIZE,
-                    ImmutableMap.of());
+                    keyMap);
 
             return new OrcBatchPageSource(
                     recordReader,
