@@ -69,6 +69,7 @@ import static com.facebook.presto.hive.HiveSessionProperties.getOrcTinyStripeThr
 import static com.facebook.presto.hive.HiveSessionProperties.isOrcBloomFiltersEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isOrcZstdJniDecompressionEnabled;
 import static com.facebook.presto.hive.HiveUtil.getPhysicalHiveColumnHandles;
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -229,7 +230,15 @@ public class OrcBatchPageSourceFactory
 
         OrcAggregatedMemoryContext systemMemoryUsage = new HiveOrcAggregatedMemoryContext();
         try {
-            OrcReader reader = new OrcReader(orcDataSource, orcEncoding, orcFileTailSource, stripeMetadataSource, new HiveOrcAggregatedMemoryContext(), orcReaderOptions, hiveFileContext.isCacheable());
+            OrcReader reader = new OrcReader(
+                    orcDataSource,
+                    orcEncoding,
+                    orcFileTailSource,
+                    stripeMetadataSource,
+                    new HiveOrcAggregatedMemoryContext(),
+                    orcReaderOptions,
+                    hiveFileContext.isCacheable(),
+                    NO_ENCRYPTION);
 
             List<HiveColumnHandle> physicalColumns = getPhysicalHiveColumnHandles(columns, useOrcColumnNames, reader, path);
             ImmutableMap.Builder<Integer, Type> includedColumns = ImmutableMap.builder();
@@ -251,7 +260,8 @@ public class OrcBatchPageSourceFactory
                     length,
                     hiveStorageTimeZone,
                     systemMemoryUsage,
-                    INITIAL_BATCH_SIZE);
+                    INITIAL_BATCH_SIZE,
+                    ImmutableMap.of());
 
             return new OrcBatchPageSource(
                     recordReader,
