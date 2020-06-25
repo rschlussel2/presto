@@ -38,7 +38,10 @@ public class TestDwrfEncryptionMetadata
         DwrfEncryptionMetadata dwrfEncryptionMetadata = new DwrfEncryptionMetadata(
                 ImmutableMap.of("c1", "abcd".getBytes(),
                         "c3.d2.e1.f1", "def".getBytes(),
-                        "c3.d2.e2", "ghi".getBytes()));
+                        "c3.d2.e2", "ghi".getBytes()),
+                ImmutableMap.of(),
+                "test_algo",
+                "test_provider");
 
         List<HiveColumnHandle> columnHandleList = ImmutableList.of(
                 new HiveColumnHandle("c1", HIVE_INT, TypeSignature.parseTypeSignature(BIGINT), 0, HiveColumnHandle.ColumnType.REGULAR, Optional.empty()),
@@ -66,7 +69,7 @@ public class TestDwrfEncryptionMetadata
     @Test(expectedExceptions = PrestoException.class)
     public void testInvalidKeyMap()
     {
-        DwrfEncryptionMetadata dwrfEncryptionMetadata = new DwrfEncryptionMetadata(ImmutableMap.of("c1", "abcd".getBytes()));
+        DwrfEncryptionMetadata dwrfEncryptionMetadata = new DwrfEncryptionMetadata(ImmutableMap.of("c1", "abcd".getBytes()), ImmutableMap.of(), "test_algo", "test_provider");
 
         List<HiveColumnHandle> columnHandleList = ImmutableList.of(
                 new HiveColumnHandle("column1", HIVE_INT, TypeSignature.parseTypeSignature(BIGINT), 0, HiveColumnHandle.ColumnType.REGULAR, Optional.empty()));

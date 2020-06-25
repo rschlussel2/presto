@@ -13,10 +13,12 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.common.type.RowType;
 import com.facebook.presto.hive.datasink.OutputStreamDataSinkFactory;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
+import com.facebook.presto.hive.metastore.Partition;
 import com.facebook.presto.hive.metastore.thrift.BridgingHiveMetastore;
 import com.facebook.presto.hive.metastore.thrift.InMemoryHiveMetastore;
 import com.facebook.presto.spi.ColumnMetadata;
@@ -28,18 +30,21 @@ import com.facebook.presto.spi.security.PrincipalType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
+import io.airlift.slice.Slices;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.io.File;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.json.JsonCodec.jsonCodec;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.hive.HiveStorageFormat.DWRF;
@@ -60,15 +65,22 @@ import static com.facebook.presto.hive.HiveTestUtils.PARTITION_UPDATE_CODEC;
 import static com.facebook.presto.hive.HiveTestUtils.ROW_EXPRESSION_SERVICE;
 import static com.facebook.presto.hive.HiveTestUtils.SESSION;
 import static com.facebook.presto.hive.HiveTestUtils.TYPE_MANAGER;
+import static com.facebook.presto.hive.PartitionUpdate.UpdateMode.NEW;
+import static com.facebook.presto.hive.PartitionUpdate.UpdateMode.OVERWRITE;
+import static com.facebook.presto.hive.TestDwrfEncryptionInformationSource.TEST_EXTRA_METADATA;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.builder;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
 
 public class TestHiveMetadataFileFormatEncryptionSettings
 {
     private static final String TEST_SERVER_VERSION = "test_version";
     private static final String TEST_DB_NAME = "test_db";
+    private static final JsonCodec<PartitionUpdate> PARTITION_CODEC = jsonCodec(PartitionUpdate.class);
 
     private HiveMetadataFactory metadataFactory;
     private HiveTransactionManager transactionManager;
@@ -107,7 +119,8 @@ public class TestHiveMetadataFileFormatEncryptionSettings
                 new HiveStagingFileCommitter(HDFS_ENVIRONMENT, listeningDecorator(executor)),
                 new HiveZeroRowFileCreator(HDFS_ENVIRONMENT, new OutputStreamDataSinkFactory(), listeningDecorator(executor)),
                 TEST_SERVER_VERSION,
-                new HivePartitionObjectBuilder());
+                new HivePartitionObjectBuilder(),
+                new HiveEncryptionInformationProvider(ImmutableList.of(new TestDwrfEncryptionInformationSource())));
 
         metastore.createDatabase(Database.builder()
                 .setDatabaseName(TEST_DB_NAME)
@@ -125,13 +138,15 @@ public class TestHiveMetadataFileFormatEncryptionSettings
         }
     }
 
-    private static ConnectorTableMetadata getConnectorTableMetadata(String tableName, Map<String, Object> tableProperties)
+    private static ConnectorTableMetadata getConnectorTableMetadata(String tableName, Map<String, Object> tableProperties, boolean isPartitioned)
     {
         ImmutableMap.Builder<String, Object> properties = builder();
         properties.put(BUCKET_COUNT_PROPERTY, 0);
         properties.put(BUCKETED_BY_PROPERTY, ImmutableList.of());
         properties.put(SORTED_BY_PROPERTY, ImmutableList.of());
-        properties.put(PARTITIONED_BY_PROPERTY, ImmutableList.of("ds"));
+        if (isPartitioned) {
+            properties.put(PARTITIONED_BY_PROPERTY, ImmutableList.of("ds"));
+        }
         properties.put(STORAGE_FORMAT_PROPERTY, DWRF);
 
         properties.putAll(tableProperties);
@@ -165,10 +180,13 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testTableCreationWithTableKeyReference()
     {
         String tableName = "test_enc_with_table_key";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_TABLE, "keyReference1",
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_TABLE, "keyReference1",
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             HiveMetadata metadata = metadataFactory.get();
@@ -188,10 +206,13 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testTableCreationWithColumnKeyReference()
     {
         String tableName = "test_enc_with_column_key";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_varchar,t_bigint", "key2: t_struct.char,t_struct.str.a")),
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_varchar,t_bigint", "key2: t_struct.char,t_struct.str.a")),
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             HiveMetadata metadata = metadataFactory.get();
@@ -211,22 +232,51 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testCreateTableAsSelectWithColumnKeyReference()
     {
         String tableName = "test_ctas_enc_with_column_key";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_varchar,t_bigint", "key2: t_struct.char,t_struct.str.a")),
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ColumnEncryptionInformation columnEncryptionInformation = ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_varchar,t_bigint", "key2: t_struct.char,t_struct.str.a"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_COLUMNS, columnEncryptionInformation,
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             HiveMetadata metadata = metadataFactory.get();
 
             HiveOutputTableHandle outputHandle = metadata.beginCreateTable(SESSION, table, Optional.empty());
-            metadata.finishCreateTable(SESSION, outputHandle, ImmutableList.of(), ImmutableList.of());
+
+            assertTrue(outputHandle.getEncryptionInformation().isPresent());
+            assertEquals(
+                    outputHandle.getEncryptionInformation().get(),
+                    EncryptionInformation.fromEncryptionMetadata(DwrfEncryptionMetadata.forPerField(
+                            columnEncryptionInformation.getColumnToKeyReference().entrySet().stream()
+                                    .collect(toImmutableMap(entry -> entry.getKey().toString(), entry -> entry.getValue().getBytes())),
+                            ImmutableMap.of(TEST_EXTRA_METADATA, "test_algo"),
+                            "test_algo",
+                            "test_provider")));
+
+            List<PartitionUpdate> partitionUpdates = ImmutableList.of(
+                    new PartitionUpdate("ds=2020-06-26", NEW, "path1", "path1", ImmutableList.of(), 0, 0, 0),
+                    new PartitionUpdate("ds=2020-06-27", NEW, "path2", "path2", ImmutableList.of(), 0, 0, 0));
+
+            metadata.finishCreateTable(
+                    SESSION,
+                    outputHandle,
+                    partitionUpdates.stream().map(update -> Slices.utf8Slice(PARTITION_CODEC.toJson(update))).collect(toImmutableList()),
+                    ImmutableList.of());
 
             ConnectorTableMetadata receivedMetadata = metadata.getTableMetadata(SESSION, new HiveTableHandle(TEST_DB_NAME, tableName));
 
             assertEquals(receivedMetadata.getProperties().get(ENCRYPT_COLUMNS), table.getProperties().get(ENCRYPT_COLUMNS));
             assertEquals(receivedMetadata.getProperties().get(DWRF_ENCRYPTION_ALGORITHM), table.getProperties().get(DWRF_ENCRYPTION_ALGORITHM));
             assertEquals(receivedMetadata.getProperties().get(DWRF_ENCRYPTION_PROVIDER), table.getProperties().get(DWRF_ENCRYPTION_PROVIDER));
+
+            metadata.commit();
+
+            Map<String, Optional<Partition>> partitions = metastore.getPartitionsByNames(TEST_DB_NAME, tableName, ImmutableList.of("ds=2020-06-26", "ds=2020-06-27"));
+            assertEquals(partitions.get("ds=2020-06-26").get().getParameters().get(TEST_EXTRA_METADATA), "test_algo");
+            assertEquals(partitions.get("ds=2020-06-27").get().getParameters().get(TEST_EXTRA_METADATA), "test_algo");
         }
         finally {
             dropTable(tableName);
@@ -237,11 +287,14 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testTableCreationFailureWithColumnAndTableKeyReference()
     {
         String tableName = "test_enc_with_table_key_and_column_key";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_TABLE, "tableKey",
-                ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_varchar,t_bigint", "key2: t_struct.char,t_struct.str.a")),
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_TABLE, "tableKey",
+                        ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_varchar,t_bigint", "key2: t_struct.char,t_struct.str.a")),
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             metadataFactory.get().createTable(SESSION, table, false);
@@ -255,10 +308,13 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testTableCreationFailureWithPartitionAsEncrypted()
     {
         String tableName = "test_enc_with_table_key_with_partition_enc";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:ds")),
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:ds")),
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             metadataFactory.get().createTable(SESSION, table, false);
@@ -272,10 +328,13 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testTableCreationFailureWithUnknownColumnAsEncrypted()
     {
         String tableName = "test_enc_with_table_key_with_unknown_col_enc";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:this_column_does_not_exist")),
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:this_column_does_not_exist")),
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             metadataFactory.get().createTable(SESSION, table, false);
@@ -289,10 +348,13 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testTableCreationFailureWithUnknownSubfieldAsEncrypted()
     {
         String tableName = "test_enc_with_table_key_with_unknown_col_enc";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_struct.does_not_exist_subfield")),
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_struct.does_not_exist_subfield")),
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             metadataFactory.get().createTable(SESSION, table, false);
@@ -306,13 +368,80 @@ public class TestHiveMetadataFileFormatEncryptionSettings
     public void testTableCreationFailureWithSubfieldAlsoHavingASetting()
     {
         String tableName = "test_enc_with_table_key_with_subfield_also_having_a_setting";
-        ConnectorTableMetadata table = getConnectorTableMetadata(tableName, ImmutableMap.of(
-                ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_struct.str", "key2:t_struct.str.a")),
-                DWRF_ENCRYPTION_ALGORITHM, "test_algo",
-                DWRF_ENCRYPTION_PROVIDER, "test_provider"));
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_struct.str", "key2:t_struct.str.a")),
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
 
         try {
             metadataFactory.get().createTable(SESSION, table, false);
+        }
+        finally {
+            dropTable(tableName);
+        }
+    }
+
+    @Test
+    public void testInsertIntoPartitionedTable()
+    {
+        String tableName = "test_enc_with_insert_partitioned_table";
+        ConnectorTableMetadata table = getConnectorTableMetadata(
+                tableName,
+                ImmutableMap.of(
+                        ENCRYPT_COLUMNS, ColumnEncryptionInformation.fromTableProperty(ImmutableList.of("key1:t_struct.str")),
+                        DWRF_ENCRYPTION_ALGORITHM, "test_algo",
+                        DWRF_ENCRYPTION_PROVIDER, "test_provider"),
+                true);
+
+        try {
+            HiveMetadata createHiveMetadata = metadataFactory.get();
+            createHiveMetadata.createTable(SESSION, table, false);
+            HiveInsertTableHandle insertTableHandle = createHiveMetadata.beginInsert(SESSION, new HiveTableHandle(TEST_DB_NAME, tableName));
+
+            assertTrue(insertTableHandle.getEncryptionInformation().isPresent());
+            assertEquals(
+                    insertTableHandle.getEncryptionInformation().get(),
+                    EncryptionInformation.fromEncryptionMetadata(
+                            DwrfEncryptionMetadata.forPerField(
+                                    ImmutableMap.of("t_struct.str", "key1".getBytes()),
+                                    ImmutableMap.of(TEST_EXTRA_METADATA, "test_algo"),
+                                    "test_algo",
+                                    "test_provider")));
+
+            List<PartitionUpdate> partitionUpdates = ImmutableList.of(
+                    new PartitionUpdate("ds=2020-06-26", NEW, "path1", "path1", ImmutableList.of(), 0, 0, 0),
+                    new PartitionUpdate("ds=2020-06-27", NEW, "path2", "path2", ImmutableList.of(), 0, 0, 0));
+
+            createHiveMetadata.finishInsert(
+                    SESSION,
+                    insertTableHandle,
+                    partitionUpdates.stream().map(update -> Slices.utf8Slice(PARTITION_CODEC.toJson(update))).collect(toImmutableList()),
+                    ImmutableList.of());
+            createHiveMetadata.commit();
+
+            Map<String, Optional<Partition>> partitions = metastore.getPartitionsByNames(TEST_DB_NAME, tableName, ImmutableList.of("ds=2020-06-26", "ds=2020-06-27"));
+            assertEquals(partitions.get("ds=2020-06-26").get().getStorage().getLocation(), "path1");
+            assertEquals(partitions.get("ds=2020-06-26").get().getParameters().get(TEST_EXTRA_METADATA), "test_algo");
+            assertEquals(partitions.get("ds=2020-06-27").get().getParameters().get(TEST_EXTRA_METADATA), "test_algo");
+
+            HiveMetadata overrideHiveMetadata = metadataFactory.get();
+            insertTableHandle = overrideHiveMetadata.beginInsert(SESSION, new HiveTableHandle(TEST_DB_NAME, tableName));
+            partitionUpdates = ImmutableList.of(
+                    new PartitionUpdate("ds=2020-06-26", OVERWRITE, "path3", "path3", ImmutableList.of(), 0, 0, 0));
+
+            overrideHiveMetadata.finishInsert(
+                    SESSION,
+                    insertTableHandle,
+                    partitionUpdates.stream().map(update -> Slices.utf8Slice(PARTITION_CODEC.toJson(update))).collect(toImmutableList()),
+                    ImmutableList.of());
+            overrideHiveMetadata.commit();
+
+            partitions = metastore.getPartitionsByNames(TEST_DB_NAME, tableName, ImmutableList.of("ds=2020-06-26"));
+            assertEquals(partitions.get("ds=2020-06-26").get().getStorage().getLocation(), "path3");
+            assertEquals(partitions.get("ds=2020-06-26").get().getParameters().get(TEST_EXTRA_METADATA), "test_algo");
         }
         finally {
             dropTable(tableName);
